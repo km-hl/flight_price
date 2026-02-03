@@ -1,0 +1,31 @@
+name: Check Flight Price
+
+on:
+  schedule:
+    # 这是定时器
+    # 北京时间每天上午 10 点 (UTC 02:00)
+    # 北京时间每天下午 6 点 (UTC 10:00)
+    - cron: '0 2,10 * * *'
+  workflow_dispatch: # 这个意思是允许你点按钮手动触发
+
+jobs:
+  run_script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install libraries
+        run: pip install requests
+        
+      - name: Run Python Script
+        env:
+          # 把仓库里的 Secrets 传给 Python 脚本
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: python main.py
