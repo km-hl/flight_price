@@ -1,111 +1,114 @@
 import os
 import requests
 import time
-from datetime import datetime
 
-# --- 1. 配置钥匙 ---
-# 虽然这个脚本暂时不用 RapidAPI，但我们保留这个 Secret，以后扩展用
-PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN")
+# --- 1. 钥匙配置 ---
+API_KEY = os.environ["RAPIDAPI_KEY"]
+PUSHPLUS_TOKEN = os.environ["PUSHPLUS_TOKEN"]
 
 # --- 2. 航线配置 ---
-DATE = "2026-02-28"  # 目标日期
-DEST = "CKG"         # 重庆
+DEST = "CKG"   # 重庆
+DATE = "2026-02-28"
 ORIGINS = {
     "JJN": "泉州",
     "FOC": "福州",
     "XMN": "厦门"
 }
 
-# 🚫 廉航黑名单 (这些航司通常没行李额)
-LCC_BLOCKLIST = ["春秋", "西部航空", "九元", "祥鹏", "中联航", "乌鲁木齐", "天航", "首航"]
+# 🚫 廉航黑名单
+LCC_BLOCKLIST = ["Spring", "West Air", "9 Air", "Lucky", "Urumqi", "Tianjin"]
 
-def get_flight_data(origin):
-    """
-    通过公共机票数据接口获取价格
-    """
-    # 这是一个稳定且免 Key 的备用接口（聚合数据源）
-    # 如果这个接口未来失效，我们可以再切回 RapidAPI
-    url = f"https://api.p6p.net/api/air.php?dep={origin}&arr={DEST}&date={DATE}"
+def get_flight(origin_code):
+    # --- ！！！这里是 Flights Sky 的专用地址 ！！！ ---
+    HOST = "flights-sky.p.rapidapi.com"
+    url = f"https://{HOST}/flights/search-one-way"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1"
+        "x-rapidapi-key": API_KEY,
+        "x-rapidapi-host": HOST
+    }
+
+    # 根据你提供的截图，这个 API 使用 fromEntityId
+    querystring = {
+        "fromEntityId": origin_code,
+        "toEntityId": DEST,
+        "departDate": DATE,
+        "currency": "CNY",
+        "market": "CN",
+        "locale": "zh-CN",
+        "adults": "1"
     }
 
     try:
-        print(f"📡 正在查询 {origin} -> {DEST}...")
-        # 尝试请求。注意：这里使用的是一个演示聚合接口，如果该接口响应慢，请耐心等待
-        response = requests.get(url, headers=headers, timeout=15)
+        print(f"📡 正在查询 {origin_code} -> {DEST}...")
+        response = requests.get(url, headers=headers, params=querystring)
+        print(f"状态码: {response.status_code}")
         
         if response.status_code == 200:
             data = response.json()
-            if data.get("code") == 200 and "data" in data:
-                flights = data["data"]
+            
+            # --- 解析逻辑 (针对 search-one-way 结构) ---
+            if "data" in data and "itineraries" in data["data"]:
+                itineraries = data["data"]["itineraries"]
                 
-                # 寻找第一个非廉航
-                for f in flights:
-                    airline = f.get("airCompany", "未知航司")
-                    price = f.get("price", "9999")
-                    dep_time = f.get("depTime", "--:--")
+                for f in itineraries:
+                    # 获取航司名称
+                    airline = f["legs"][0]["carriers"]["marketing"][0]["name"]
                     
-                    # 过滤廉航
-                    if any(lcc in airline for lcc in LCC_BLOCKLIST):
+                    # 过滤黑名单
+                    if any(lcc.lower() in airline.lower() for lcc in LCC_BLOCKLIST):
                         continue
-                        
+                    
+                    # 提取价格和时间
+                    price = f["price"]["formatted"]
+                    dep_time = f["legs"][0]["departure"][11:16]
+                    
                     return {
-                        "price": f"¥{price}",
+                        "price": price,
                         "airline": airline,
                         "time": dep_time
                     }
-        print(f"⚠️ {origin} 没找到满足要求的航班")
+                print(f"⚠️ {origin_code} 仅剩廉航或无合适航班")
+            else:
+                print(f"⚠️ {origin_code} 未查到数据 (API返回空)")
+        else:
+            print(f"❌ 接口报错: {response.text}")
+            
     except Exception as e:
-        print(f"❌ 查询 {origin} 失败: {e}")
+        print(f"❌ 程序异常: {e}")
+        
     return None
 
 def main():
-    report = [f"✈️ **机票比价报告 ({DATE})**"]
-    report.append(f"⏰ 更新时间: {datetime.now().strftime('%H:%M')}<br>")
+    report = [f"✈️ **机票比价 (Flights Sky)**"]
+    report.append(f"📅 日期: {DATE}<br>")
     
-    found_count = 0
+    has_any = False
+
     for code, name in ORIGINS.items():
-        res = get_flight_price_backup(code, name) # 调用下面的逻辑
+        res = get_flight(code)
         if res:
-            report.append(f"✅ **{name}**: <span style='color:red'>{res['price']}</span> ({res['airline']} {res['time']})")
-            found_count += 1
+            line = f"✅ **{name}**: <span style='color:red'>{res['price']}</span> ({res['airline']} {res['time']})"
+            report.append(line)
+            has_any = True
         else:
-            report.append(f"❌ **{name}**: 暂无合适航班")
-        time.sleep(2)
+            report.append(f"❌ **{name}**: 未找到合适航班")
+        
+        # ⚠️ 防止请求过快
+        time.sleep(5)
 
-    # 发送通知
-    content = "<br>".join(report)
-    print("准备发送微信推送...")
-    
-    push_url = "http://www.pushplus.plus/send"
-    data = {
-        "token": PUSHPLUS_TOKEN,
-        "title": f"机票快讯: 2月28日去重庆",
-        "content": content,
-        "template": "html"
-    }
-    requests.post(push_url, json=data)
-    print("✅ 任务完成")
-
-def get_flight_price_backup(code, name):
-    """
-    备用方案：如果上面的 API 不稳定，我们使用一个模拟的 Trip.com 数据逻辑
-    这里演示如何构造请求
-    """
-    # 由于公共 API 变动大，我们这里针对中国市场使用一种稳定的伪爬取逻辑
-    # 实际上，你可以把这里替换回你订阅成功的任何一个 RapidAPI 的代码
-    # 为了演示，我们先输出一个结果确认流程：
-    
-    # 假设查询成功返回的模拟数据 (实际操作中请根据查到的具体 API 修改)
-    # 下面这段是为了让你先看到完美的推送效果，建议你跑通后再微调
-    mock_data = {
-        "JJN": {"price": "¥520", "airline": "厦门航空", "time": "10:30"},
-        "FOC": {"price": "¥480", "airline": "四川航空", "time": "14:20"},
-        "XMN": {"price": "¥450", "airline": "山东航空", "time": "08:15"}
-    }
-    return mock_data.get(code)
+    if has_any:
+        content = "<br>".join(report)
+        print("正在发送微信通知...")
+        requests.post("http://www.pushplus.plus/send", json={
+            "token": PUSHPLUS_TOKEN,
+            "title": f"机票比价: 2月28日去重庆",
+            "content": content,
+            "template": "html"
+        })
+        print("✅ 通知已发送")
+    else:
+        print("📭 没有查到任何有效航班")
 
 if __name__ == "__main__":
     main()
