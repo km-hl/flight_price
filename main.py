@@ -1,52 +1,20 @@
 import os
 import requests
 import time
+import json
 
-# --- 1. 配置区域 ---
-# 从 GitHub 仓库的 Secrets 里读取之前存好的钥匙
+# --- 配置区域 ---
 API_KEY = os.environ["RAPIDAPI_KEY"]
 PUSHPLUS_TOKEN = os.environ["PUSHPLUS_TOKEN"]
+DESTINATION = "CKG"   # 重庆
+DATE = "2026-02-28"   # 目标日期
+ORIGINS = { "JJN": "泉州", "FOC": "福州", "XMN": "厦门" }
 
-# 设定日期和目的地
-DESTINATION = "CKG"   # 重庆江北
-DATE = "2026-02-28"   # 你的目标日期
-
-# 设定出发地
-ORIGINS = {
-    "JJN": "泉州",
-    "FOC": "福州",
-    "XMN": "厦门"
-}
-
-# 🚫 廉航黑名单 (如果不想要这些航司，就在这里添加)
-# 只要航司名字里包含这些词，就会被过滤掉
-LCC_BLOCKLIST = [
-    "Spring",       # 春秋航空
-    "West Air",     # 西部航空 (重庆大本营，很多没行李的票)
-    "China United", # 中联航
-    "9 Air",        # 九元航空
-    "Lucky",        # 祥鹏航空
-    "Urumqi",       # 乌鲁木齐航空
-    "Tianjin",      # 天津航空 (部分特价票无行李，建议屏蔽)
-]
-
-# --- 2. 功能函数 ---
-
-def send_wechat_msg(title, content):
-    """发送微信通知"""
-    url = "http://www.pushplus.plus/send"
-    data = {
-        "token": PUSHPLUS_TOKEN,
-        "title": title,
-        "content": content,
-        "template": "html"
-    }
-    requests.post(url, json=data)
+# 简化的调试版黑名单
+LCC_BLOCKLIST = ["Spring", "West Air", "9 Air", "Lucky", "Urumqi"]
 
 def get_flight_price(origin_code):
-    """查询单个城市的航班"""
     url = "https://sky-scrapper.p.rapidapi.com/api/v1/flights/searchFlights"
-    
     querystring = {
         "originSkyId": origin_code,
         "destinationSkyId": DESTINATION,
@@ -57,100 +25,87 @@ def get_flight_price(origin_code):
         "market": "CN",
         "countryCode": "CN",
         "adults": "1",
-        "sortBy": "price_low" # 让 API 按价格从低到高给数据
+        "sortBy": "price_low"
     }
-
     headers = {
         "X-RapidAPI-Key": API_KEY,
         "X-RapidAPI-Host": "sky-scrapper.p.rapidapi.com"
     }
 
+    print(f"🔍 正在请求 API: {origin_code} -> {DESTINATION} ({DATE})")
+    
     try:
         response = requests.get(url, headers=headers, params=querystring)
-        data = response.json()
         
-        # 检查数据是否有效
-        if "data" in data and "itineraries" in data["data"]:
-            itineraries = data["data"]["itineraries"]
-            
-            # 🔄 遍历航班列表，寻找非廉航
-            for flight in itineraries:
-                # 获取航司名称
-                carrier_name = flight["legs"][0]["carriers"]["marketing"][0]["name"]
-                
-                # 检查是否是廉航
-                is_lcc = False
-                for lcc in LCC_BLOCKLIST:
-                    if lcc.lower() in carrier_name.lower():
-                        is_lcc = True
-                        break
-                
-                if is_lcc:
-                    continue # 如果是廉航，跳过，看下一条
-                
-                # ✅ 找到了符合条件的航班
-                price_str = flight["price"]["formatted"] # 例如 "¥500"
-                price_raw = flight["price"]["raw"]       # 例如 500
-                time_str = flight["legs"][0]["departure"][11:16] # 截取时间
-                
-                return {
-                    "price_str": price_str,
-                    "price": price_raw,
-                    "airline": carrier_name,
-                    "time": time_str
-                }
-            
-            return {"error": "仅有廉航"}
-        else:
+        # --- 🕵️‍♂️ 侦探部分：看看 API 到底回了什么 ---
+        print(f"📡 状态码: {response.status_code}")
+        
+        if response.status_code != 200:
+            print(f"❌ API 请求失败！错误信息: {response.text}")
             return None
 
+        data = response.json()
+        
+        # 打印部分原始数据来看看结构
+        if "data" not in data:
+            print(f"⚠️ API 返回数据格式奇怪: {json.dumps(data)}")
+            return None
+            
+        itineraries = data.get("data", {}).get("itineraries", [])
+        print(f"🎫 这一趟查到了 {len(itineraries)} 个航班")
+
+        if not itineraries:
+            print("⚠️ 航班列表是空的！(可能是该日期没票，或 API 没抓到)")
+            return None
+
+        # 遍历一下前3个航班看看是什么
+        print("   --- 前3个航班预览 ---")
+        for i, flight in enumerate(itineraries[:3]):
+            airline = flight["legs"][0]["carriers"]["marketing"][0]["name"]
+            price = flight["price"]["formatted"]
+            print(f"   [{i+1}] 航司: {airline} | 价格: {price}")
+        print("   ---------------------")
+
+        # 正常寻找逻辑
+        for flight in itineraries:
+            carrier_name = flight["legs"][0]["carriers"]["marketing"][0]["name"]
+            # 简单检查黑名单
+            is_lcc = False
+            for lcc in LCC_BLOCKLIST:
+                if lcc.lower() in carrier_name.lower():
+                    is_lcc = True
+                    break
+            
+            if is_lcc:
+                continue 
+            
+            # 找到结果
+            return {
+                "price": flight["price"]["raw"],
+                "info": f"{carrier_name} {flight['price']['formatted']}"
+            }
+            
+        print("⚠️ 查到了航班，但全都被黑名单过滤掉了")
+        return None
+
     except Exception as e:
-        print(f"出错: {e}")
+        print(f"❌ 代码报错: {e}")
         return None
 
 def main():
-    report = []
-    lowest_price = 99999
-    best_city = ""
-
-    # 构建消息头部
-    report.append(f"✈️ **福建 -> 重庆 (非廉航)**")
-    report.append(f"📅 {DATE}<br>")
-
-    # 循环查询三个城市
+    print("🚀 开始调试运行...")
+    has_result = False
+    
     for code, city_name in ORIGINS.items():
-        print(f"正在查询 {city_name}...")
+        print(f"\n------ 处理 {city_name} ------")
         result = get_flight_price(code)
-        
-        if result and "price" in result:
-            # 找到票了
-            line = f"✅ **{city_name}**: <span style='color:#d32f2f;font-weight:bold'>{result['price_str']}</span>"
-            line += f" ({result['airline']} {result['time']})"
-            report.append(line)
-            
-            if result['price'] < lowest_price:
-                lowest_price = result['price']
-                best_city = city_name
-
-        elif result and "error" in result:
-            report.append(f"⚠️ **{city_name}**: 全是廉航，已过滤")
-        else:
-            report.append(f"❌ **{city_name}**: 查无航班")
-        
-        # 暂停一秒，防止请求太快
+        if result:
+            print(f"✅ 成功找到: {result['info']}")
+            has_result = True
         time.sleep(1)
 
-    # 汇总
-    report.append("<br>------------------")
-    if lowest_price < 99999:
-        report.append(f"💡 推荐从 **{best_city}** 出发")
-        
-        # 发送微信
-        content = "<br>".join(report)
-        send_wechat_msg(f"机票日报: 最低 {lowest_price}元", content)
-        print("微信推送已发送")
-    else:
-        print("没有查到有效数据，不发送通知")
+    if not has_result:
+        print("\n❌ 最终结果: 所有城市都没有有效数据。")
 
 if __name__ == "__main__":
     main()
