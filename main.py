@@ -29,7 +29,7 @@ def get_flight_price(origin_code):
     }
     headers = {
         "X-RapidAPI-Key": API_KEY,
-        "X-RapidAPI-Host": "sky-scrapper.p.rapidapi.com"
+        "X-RapidAPI-Host": "sky-scrapper3.p.rapidapi.com"
     }
 
     print(f"🔍 正在请求 API: {origin_code} -> {DESTINATION} ({DATE})")
