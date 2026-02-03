@@ -29,8 +29,11 @@ def get_flight(origin_code):
         "toEntityId": DEST,
         "departDate": DATE,
         "currency": "CNY",
-        "market": "CN",
-        "adults": "1"
+        "market": "CN",      # 强制指定中国市场
+        "locale": "zh-CN",   # 强制指定中文语言
+        "adults": "1",
+        "cabinClass": "economy",
+        "sortBy": "price_low" # 强制按价格最低排序
     }
 
     try:
