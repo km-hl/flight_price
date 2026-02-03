@@ -1,111 +1,69 @@
 import os
 import requests
 import time
-import json
 
-# --- 配置区域 ---
+# --- 1. 配置钥匙 (从 Secrets 读取) ---
 API_KEY = os.environ["RAPIDAPI_KEY"]
 PUSHPLUS_TOKEN = os.environ["PUSHPLUS_TOKEN"]
-DESTINATION = "CKG"   # 重庆
-DATE = "2026-02-28"   # 目标日期
-ORIGINS = { "JJN": "泉州", "FOC": "福州", "XMN": "厦门" }
 
-# 简化的调试版黑名单
-LCC_BLOCKLIST = ["Spring", "West Air", "9 Air", "Lucky", "Urumqi"]
+# --- 2. 这里是关键！请根据你网页上看到的修改 ---
+# 如果你订阅的是 Sky-Scanner3，通常是这个地址：
+URL = "https://sky-scrapper3.p.rapidapi.com/find/selector" 
+# 如果你订阅的是别的，请把上面引号里的内容换成你网页上看到的 url
 
-def get_flight_price(origin_code):
-    url = "https://sky-scrapper.p.rapidapi.com/api/v1/flights/searchFlights"
+HOST = "sky-scrapper3.p.rapidapi.com" 
+# 同样，把这里换成你网页上看到的 X-RapidAPI-Host
+
+def get_flight_price(origin, dest, date):
+    # 这里是参数，不同的 API 参数名不一样
+    # 如果网页上是 fromEntityId，这里就写 fromEntityId
     querystring = {
-        "originSkyId": origin_code,
-        "destinationSkyId": DESTINATION,
-        "originEntityId": origin_code,
-        "destinationEntityId": DESTINATION,
-        "date": DATE,
-        "currency": "CNY",
-        "market": "CN",
-        "countryCode": "CN",
-        "adults": "1",
-        "sortBy": "price_low"
+        "fromEntityId": origin,
+        "toEntityId": dest,
+        "departDate": date,
+        "currency": "CNY"
     }
+    # 注意：如果网页上的参数名是 originSkyId，请对应修改上面的 key
+
     headers = {
         "X-RapidAPI-Key": API_KEY,
-        "X-RapidAPI-Host": "sky-scrapper3.p.rapidapi.com"
+        "X-RapidAPI-Host": HOST
     }
 
-    print(f"🔍 正在请求 API: {origin_code} -> {DESTINATION} ({DATE})")
-    
     try:
-        response = requests.get(url, headers=headers, params=querystring)
+        print(f"正在请求: {origin} -> {dest}")
+        response = requests.get(URL, headers=headers, params=querystring)
+        print(f"收到状态码: {response.status_code}")
         
-        # --- 🕵️‍♂️ 侦探部分：看看 API 到底回了什么 ---
-        print(f"📡 状态码: {response.status_code}")
-        
-        if response.status_code != 200:
-            print(f"❌ API 请求失败！错误信息: {response.text}")
+        if response.status_code == 200:
+            data = response.json()
+            # 简化逻辑：直接打印前3条结果看能不能查到
+            print("查询成功，正在处理数据...")
+            return data
+        else:
+            print(f"错误信息: {response.text}")
             return None
-
-        data = response.json()
-        
-        # 打印部分原始数据来看看结构
-        if "data" not in data:
-            print(f"⚠️ API 返回数据格式奇怪: {json.dumps(data)}")
-            return None
-            
-        itineraries = data.get("data", {}).get("itineraries", [])
-        print(f"🎫 这一趟查到了 {len(itineraries)} 个航班")
-
-        if not itineraries:
-            print("⚠️ 航班列表是空的！(可能是该日期没票，或 API 没抓到)")
-            return None
-
-        # 遍历一下前3个航班看看是什么
-        print("   --- 前3个航班预览 ---")
-        for i, flight in enumerate(itineraries[:3]):
-            airline = flight["legs"][0]["carriers"]["marketing"][0]["name"]
-            price = flight["price"]["formatted"]
-            print(f"   [{i+1}] 航司: {airline} | 价格: {price}")
-        print("   ---------------------")
-
-        # 正常寻找逻辑
-        for flight in itineraries:
-            carrier_name = flight["legs"][0]["carriers"]["marketing"][0]["name"]
-            # 简单检查黑名单
-            is_lcc = False
-            for lcc in LCC_BLOCKLIST:
-                if lcc.lower() in carrier_name.lower():
-                    is_lcc = True
-                    break
-            
-            if is_lcc:
-                continue 
-            
-            # 找到结果
-            return {
-                "price": flight["price"]["raw"],
-                "info": f"{carrier_name} {flight['price']['formatted']}"
-            }
-            
-        print("⚠️ 查到了航班，但全都被黑名单过滤掉了")
-        return None
-
     except Exception as e:
-        print(f"❌ 代码报错: {e}")
+        print(f"发生异常: {e}")
         return None
 
 def main():
-    print("🚀 开始调试运行...")
-    has_result = False
+    # 临时测试一个城市，成功了再加循环
+    print("🚀 开始单点测试...")
+    result = get_flight_price("XMN", "CKG", "2026-02-28")
     
-    for code, city_name in ORIGINS.items():
-        print(f"\n------ 处理 {city_name} ------")
-        result = get_flight_price(code)
-        if result:
-            print(f"✅ 成功找到: {result['info']}")
-            has_result = True
-        time.sleep(1)
-
-    if not has_result:
-        print("\n❌ 最终结果: 所有城市都没有有效数据。")
+    if result:
+        # 这里只是简单的打印，确认能拿到数据
+        print("✅ 拿到数据了！")
+        # 发送一个简单的通知
+        url = "http://www.pushplus.plus/send"
+        requests.post(url, json={
+            "token": PUSHPLUS_TOKEN,
+            "title": "机票测试成功",
+            "content": "API 终于跑通了！"
+        })
+    else:
+        print("❌ 还是没拿到数据，请检查 URL 和参数名")
 
 if __name__ == "__main__":
     main()
