@@ -7,13 +7,27 @@ API_KEY = os.environ["RAPIDAPI_KEY"]
 PUSHPLUS_TOKEN = os.environ["PUSHPLUS_TOKEN"]
 
 # --- 2. 航线配置 ---
-# ⚠️ 注意：如果 2026 年查不到票，建议先改成 2025 年测试效果
-DATE = "2026-02-28" 
-DEST = "CKG"
-ORIGINS = {"JJN": "泉州", "FOC": "福州", "XMN": "厦门"}
+DEST = "CKG"   # 重庆
+DATE = "2026-02-28" # 如果查不到，记得改成 2025-02-28 试试
+ORIGINS = {
+    "JJN": "泉州",
+    "FOC": "福州",
+    "XMN": "厦门"
+}
 
-# 廉航黑名单 (暂时缩减，防止误杀)
-LCC_BLOCKLIST = ["Spring", "West Air", "9 Air", "Lucky"]
+# 🚫 终极黑名单 (中英文 + 代码 + 关键词)
+# 只要航司名字里包含下面任意一个词，就会被剔除
+LCC_BLOCKLIST = [
+    "Spring", "春秋", "9C",
+    "West", "西部", "PN", "China West", # 专门针对西部航空加强过滤
+    "9 Air", "九元", "AQ",
+    "Lucky", "祥鹏", "8L",
+    "Urumqi", "乌鲁木齐", "UQ",
+    "Tianjin", "天津", "GS",
+    "Capital", "首都", "JD",
+    "China United", "联合", "KN",
+    "Chengdu", "成都航空", "EU"
+]
 
 def get_flight(origin_code):
     HOST = "flights-sky.p.rapidapi.com"
@@ -29,78 +43,94 @@ def get_flight(origin_code):
         "toEntityId": DEST,
         "departDate": DATE,
         "currency": "CNY",
-        "market": "CN",      # 强制指定中国市场
-        "locale": "zh-CN",   # 强制指定中文语言
-        "adults": "1",
-        "cabinClass": "economy",
-        "sortBy": "price_low" # 强制按价格最低排序
+        "market": "CN",
+        "locale": "zh-CN",
+        "adults": "1"
     }
 
     try:
         print(f"📡 正在查询 {origin_code} -> {DEST}...")
-        response = requests.get(url, headers=headers, params=querystring, timeout=20)
+        response = requests.get(url, headers=headers, params=querystring, timeout=30)
         
         if response.status_code == 200:
             data = response.json()
-            # 这里的 .get() 方式可以防止程序因为找不到 key 而崩溃
             itineraries = data.get("data", {}).get("itineraries", [])
             
             if not itineraries:
-                print(f"⚠️ {origin_code} 接口返回成功但没有航班数据 (可能日期太远未放票)")
-                return None
+                return {"error": "无航班"}
 
+            # 遍历所有结果，找到第一个非廉航
             for f in itineraries:
+                # 获取航司名称
                 try:
-                    # 灵活提取航司名字
-                    legs = f.get("legs", [{}])[0]
-                    carriers = legs.get("carriers", {}).get("marketing", [{}])
-                    airline = carriers[0].get("name", "未知航司")
-                    
-                    # 灵活提取价格 (尝试三种常见的嵌套方式)
-                    price_data = f.get("price", {})
-                    price_str = price_data.get("formatted") or price_data.get("raw") or "价格待定"
-                    
-                    # 提取时间
-                    dep_time = legs.get("departure", "----")[11:16]
+                    airline = f["legs"][0]["carriers"]["marketing"][0]["name"]
+                except:
+                    continue
 
-                    # 检查黑名单
-                    is_lcc = any(lcc.lower() in airline.lower() for lcc in LCC_BLOCKLIST)
+                # 🚫 核心过滤逻辑
+                is_lcc = False
+                for block_word in LCC_BLOCKLIST:
+                    # 统一转小写进行匹配，防止 Case 差异
+                    if block_word.lower() in airline.lower():
+                        is_lcc = True
+                        # print(f"  🔪 过滤掉廉航: {airline}") # 调试用
+                        break
+                
+                if is_lcc:
+                    continue 
+
+                # ✅ 找到合适的了！
+                try:
+                    # 尝试获取价格，如果没有 formatted 就拿 raw 拼一下
+                    price_obj = f.get("price", {})
+                    price = price_obj.get("formatted")
+                    if not price:
+                        price = f"¥{price_obj.get('raw')}"
                     
-                    if is_lcc:
-                        continue # 跳过廉航
+                    dep_time = f["legs"][0]["departure"][11:16]
                     
                     return {
-                        "price": price_str,
+                        "price": price,
                         "airline": airline,
                         "time": dep_time
                     }
-                except Exception as inner_e:
-                    print(f"🔎 某条航班解析跳过: {inner_e}")
+                except:
                     continue
             
-            print(f"⚠️ {origin_code} 剩下的全是不含行李的廉航")
+            return {"error": "仅剩廉航"}
+            
         else:
             print(f"❌ 接口报错: {response.status_code}")
     except Exception as e:
-        print(f"❌ 严重异常: {e}")
+        print(f"❌ 程序异常: {e}")
+        
     return None
 
 def main():
-    report = [f"✈️ **机票比价 (2026-02-28)**"]
-    has_any = False
+    report = [f"✈️ **机票比价 ({DATE})**"]
+    report.append("<small>注: 价格通常为含税总价</small><br>")
+    
+    has_valid_flight = False
 
     for code, name in ORIGINS.items():
         res = get_flight(code)
-        if res:
-            line = f"✅ **{name}**: <span style='color:red'>{res['price']}</span> ({res['airline']} {res['time']})"
+        
+        if res and "price" in res:
+            line = f"✅ **{name}**: <span style='color:#d32f2f;font-weight:bold'>{res['price']}</span>"
+            line += f" ({res['airline']} {res['time']})"
             report.append(line)
-            has_any = True
+            has_valid_flight = True
+        elif res and res.get("error") == "仅剩廉航":
+            report.append(f"⚠️ **{name}**: 全是廉航(已过滤)")
         else:
-            report.append(f"❌ **{name}**: 暂无合适全服务航班")
+            report.append(f"❌ **{name}**: 暂无航班")
+        
         time.sleep(5)
 
-    # 无论是否查到，都发个微信，方便调试
+    # 只有当查到至少一张有效票，或者全是廉航被过滤时，才发通知
+    # 避免完全报错时发空消息
     content = "<br>".join(report)
+    
     print("正在推送微信...")
     requests.post("http://www.pushplus.plus/send", json={
         "token": PUSHPLUS_TOKEN,
@@ -108,7 +138,7 @@ def main():
         "content": content,
         "template": "html"
     })
-    print("✅ 任务完成")
+    print("✅ 完成")
 
 if __name__ == "__main__":
     main()
