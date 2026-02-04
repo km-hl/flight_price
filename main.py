@@ -15,18 +15,8 @@ ORIGINS = {
     "XMN": "厦门"
 }
 
-# 🚫 廉航黑名单 (过滤掉不需要的)
-LCC_BLOCKLIST = [
-    "Spring", "春秋", "9C",
-    "West", "西部", "PN",
-    "9 Air", "九元", "AQ",
-    "Lucky", "祥鹏", "8L",
-    "Urumqi", "乌鲁木齐", "UQ",
-    "Tianjin", "天津", "GS",
-    "Capital", "首都", "JD",
-    "China United", "联合", "KN",
-    "Chengdu", "成都航空", "EU"
-]
+# 🚫 廉航黑名单
+LCC_BLOCKLIST = ["Spring", "春秋", "West Air", "西部", "9 Air", "九元", "Lucky", "祥鹏", "Urumqi", "乌鲁木齐", "Tianjin", "天津", "Capital", "首都", "China United", "联合"]
 
 def get_flight_list(origin_code):
     HOST = "flights-sky.p.rapidapi.com"
@@ -50,7 +40,7 @@ def get_flight_list(origin_code):
     valid_flights = []
 
     try:
-        print(f"📡 正在拉取全量数据: {origin_code} -> {DEST}...")
+        print(f"📡 正在拉取 {origin_code} 全量数据...")
         response = requests.get(url, headers=headers, params=querystring, timeout=30)
         
         if response.status_code == 200:
@@ -60,17 +50,24 @@ def get_flight_list(origin_code):
             for f in itineraries:
                 try:
                     leg = f["legs"][0]
-                    airline = leg["carriers"]["marketing"][0]["name"]
+                    # 获取航司和航班号
+                    carrier_info = leg["carriers"]["marketing"][0]
+                    airline = carrier_info["name"]
+                    flight_no = leg["segments"][0].get("flightNumber", "")
+                    carrier_code = carrier_info.get("displayCode", "")
                     
+                    full_flight_code = f"{carrier_code}{flight_no}" if flight_no else airline
+
                     # 1. 过滤廉航
                     if any(lcc.lower() in airline.lower() for lcc in LCC_BLOCKLIST):
                         continue 
 
-                    # 2. 提取信息
+                    # 2. 提取价格
                     price_obj = f.get("price", {})
                     price_raw = price_obj.get("raw", 99999)
                     price_fmt = price_obj.get("formatted") or f"¥{price_raw}"
                     
+                    # 3. 提取时间
                     dep_time = leg.get("departure", "")[11:16]
                     arr_time = leg.get("arrival", "")[11:16]
                     
@@ -78,58 +75,56 @@ def get_flight_list(origin_code):
                         "price_val": price_raw,
                         "price_str": price_fmt,
                         "airline": airline,
+                        "flight_code": full_flight_code,
                         "dep": dep_time,
                         "arr": arr_time
                     })
-                except:
+                except Exception as e:
                     continue
             
-            # 按价格从低到高排序
+            # 排序并返回
             valid_flights.sort(key=lambda x: x["price_val"])
             return valid_flights
         else:
-            print(f"❌ 接口报错: {response.status_code}")
+            print(f"❌ 报错: {response.status_code}")
             return []
     except Exception as e:
-        print(f"❌ 程序异常: {e}")
+        print(f"❌ 异常: {e}")
         return []
 
 def main():
-    report = [f"✈️ **机票全列表比价 ({DATE})**"]
-    report.append("<small>含机建燃油 | 已过滤廉航</small>")
+    report = [f"✈️ **机票全列表 ({DATE})**"]
+    report.append("<small>含税参考价 | 航班号辅助核对</small>")
     
     found_any = False
 
     for code, name in ORIGINS.items():
-        print(f"正在分析 {name} 航班...")
         flights = get_flight_list(code)
-        
         report.append(f"<br>📍 **{name} 出发**")
         
         if flights:
             found_any = True
-            # 只取前 8 个结果，防止消息过长被微信截断
-            for f in flights[:8]:
-                line = f"• <span style='color:#d32f2f'>{f['price_str']}</span> | {f['airline']}<br>"
+            # 展示前 10 条，确保涵盖山东、东海、厦航等
+            for f in flights[:10]:
+                line = f"• <span style='color:#d32f2f;font-weight:bold'>{f['price_str']}</span> | **{f['airline']}** ({f['flight_code']})<br>"
                 line += f"&nbsp;&nbsp;<small>🕒 {f['dep']} ➔ {f['arr']}</small>"
                 report.append(line)
         else:
-            report.append("  <span style='color:#999'>暂无合适全服务航班</span>")
+            report.append("  <span style='color:#999'>暂无合适非廉航航班</span>")
         
-        time.sleep(5) # 频率保护
+        time.sleep(5)
 
     if found_any:
         content = "<br>".join(report)
-        print("准备推送全列表...")
         requests.post("http://www.pushplus.plus/send", json={
             "token": PUSHPLUS_TOKEN,
-            "title": f"机票全列表: {DATE} 重庆",
+            "title": f"机票监控: {DATE} 重庆",
             "content": content,
             "template": "html"
         })
         print("✅ 推送成功")
     else:
-        print("📭 全网无票，不发送。")
+        print("📭 无效数据")
 
 if __name__ == "__main__":
     main()
